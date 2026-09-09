@@ -329,13 +329,18 @@ io.on("connection", (socket) => {
 });
 
 const start = async () => {
+  const srv = server.listen(port, "0.0.0.0", () => {
+    console.log(`Server listening on port ${port}`);
+  });
+
+  srv.on("error", (error) => {
+    console.error(`Server failed to listen on port ${port}: ${error.message}`);
+    process.exitCode = 1;
+  });
+
   try {
     await dbConnection();
-    const srv = server.listen(port, "0.0.0.0");
-    srv.on("error", (error) => {
-      console.error(`Server failed to listen on port ${port}: ${error.message}`);
-      process.exitCode = 1;
-    });
+    console.log("MongoDB connected");
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
