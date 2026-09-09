@@ -4,12 +4,12 @@ dotenv.config();
 
 const dbConnection = async()=>{
     if (!process.env.DB_CONNECTION) {
-        process.exit(1);
+        throw new Error("DB_CONNECTION environment variable is not set");
     }
     try {
-        const response = await mongoose.connect(process.env.DB_CONNECTION);
+        await mongoose.connect(process.env.DB_CONNECTION);
     } catch (error) {
-        process.exit(1);
+        throw new Error(`MongoDB connection failed: ${error.message}`);
     }
 }
 

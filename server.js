@@ -120,7 +120,6 @@ app.use(cookieParser());
 app.use(helmet());
 
 serverRoutes(app);
-dbConnection();
 
 app.use((err, req, res, next) => {
   res.status(500).json({
@@ -329,17 +328,18 @@ io.on("connection", (socket) => {
 
 });
 
-const start = () => {
-  const srv = server.listen(port, "0.0.0.0", () => {
-    const protocol = "http";
-  });
-
-  srv.on("error", (err) => {
-    if (err?.code === "EADDRINUSE") {
-      return;
-    }
-    throw err;
-  });
+const start = async () => {
+  try {
+    await dbConnection();
+    const srv = server.listen(port, "0.0.0.0");
+    srv.on("error", (error) => {
+      console.error(`Server failed to listen on port ${port}: ${error.message}`);
+      process.exitCode = 1;
+    });
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 };
 
 start();
