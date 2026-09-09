@@ -1,5 +1,5 @@
 import ChatModel from "../models/ChatModel.js";
-import MessageModel from "../models/MessageModel.js";
+import MessageModel from "../models/messageModel.js";
 import UserModel from "../models/UserModel.js";
 import ContactModel from "../models/ContactModel.js";
 import cloudinary from "../config/cloudinary.js";

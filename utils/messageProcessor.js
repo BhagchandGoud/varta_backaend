@@ -1,4 +1,4 @@
-import MessageModel from "../models/MessageModel.js";
+import MessageModel from "../models/messageModel.js";
 import ChatModel from "../models/ChatModel.js";
 
 const typingTimeouts = new Map(); // store typing timeout references

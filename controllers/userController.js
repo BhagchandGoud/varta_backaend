@@ -1311,7 +1311,7 @@ export const toggleStarredMessage = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { messageId } = req.params;
-    const MessageModel = (await import("../models/MessageModel.js")).default;
+    const MessageModel = (await import("../models/messageModel.js")).default;
     const message = await MessageModel.findById(messageId).select("chat sender receiver");
     if (!message) return res.status(404).json({ success: false, message: "Message not found" });
     if (message.sender.toString() !== userId && message.receiver.toString() !== userId) return res.status(403).json({ success: false, message: "You cannot star this message" });

@@ -1,6 +1,6 @@
 import UserModel from "../models/UserModel.js";
 import ChatModel from "../models/ChatModel.js";
-import MessageModel from "../models/MessageModel.js";
+import MessageModel from "../models/messageModel.js";
 import getDataUrl from "../utils/bufferGenerator.js";
 import cloudinary from "../config/cloudinary.js";
 import fs from "fs";
