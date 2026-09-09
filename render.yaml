@@ -2,7 +2,6 @@ services:
   - type: web
     name: backend
     runtime: node
-    rootDir: backend
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/v3/health
