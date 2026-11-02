@@ -1,6 +1,6 @@
 # fly.toml app configuration file generated for varta-backaend on 2026-11-02T18:27:10Z
 #
-# See https://fly.io/docs/reference/configuration/ for information about how this file.
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'varta-backaend'
