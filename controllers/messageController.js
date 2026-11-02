@@ -65,8 +65,20 @@ export const sendMessage = async (req, res) => {
       if (!reply) return res.status(400).json({ success: false, message: "Reply message was not found in this chat" });
     }
 
-    if (forwardedFrom && !await MessageModel.exists({ _id: forwardedFrom })) {
-      return res.status(400).json({ success: false, message: "Original forwarded message was not found" });
+    let resolvedType = type || "text";
+    let fileDetails = null;
+    let metadata = null;
+
+    if (forwardedFrom) {
+      const original = await MessageModel.findById(forwardedFrom);
+      if (!original) {
+        return res.status(400).json({ success: false, message: "Original forwarded message was not found" });
+      }
+      if (original.fileDetails?.url) {
+        resolvedType = original.type;
+        fileDetails = original.fileDetails;
+        metadata = original.metadata;
+      }
     }
 
     const message = new MessageModel({
@@ -74,7 +86,9 @@ export const sendMessage = async (req, res) => {
       sender: userId,
       receiver: receiverId,
       content,
-      type: type || "text",
+      type: resolvedType,
+      fileDetails: fileDetails || undefined,
+      metadata: metadata || undefined,
       status: "sent",
       iv: iv || null,
       authTag: authTag || null,
@@ -141,6 +155,39 @@ export const sendMessage = async (req, res) => {
   }
 };
 
+const buildCloudinaryMediaUrls = (publicId, resourceType, mimeType) => {
+  const baseOptions = {
+    secure: true,
+    resource_type: resourceType,
+  };
+
+  const originalUrl = cloudinary.url(publicId, baseOptions);
+
+  const previewTransform =
+    resourceType === "image"
+      ? [{ width: 900, crop: "limit" }, { quality: "auto" }, { fetch_format: "auto" }]
+      : resourceType === "video"
+        ? [{ width: 900, crop: "limit" }, { quality: "auto" }, { fetch_format: "auto" }]
+        : [{ quality: "auto" }, { fetch_format: "auto" }];
+
+  const thumbnailTransform =
+    resourceType === "video"
+      ? [{ width: 320, height: 180, crop: "fill" }, { quality: "auto" }, { fetch_format: "auto" }]
+      : previewTransform;
+
+  return {
+    originalUrl,
+    previewUrl: cloudinary.url(publicId, {
+      ...baseOptions,
+      transformation: previewTransform,
+    }),
+    thumbnailUrl: cloudinary.url(publicId, {
+      ...baseOptions,
+      transformation: thumbnailTransform,
+    }),
+  };
+};
+
 // SEND FILE MESSAGE WITH CLOUDINARY
 
 export const sendFileMessage = async (req, res) => {
@@ -156,7 +203,7 @@ export const sendFileMessage = async (req, res) => {
       });
     }
 
-    const { caption, type } = req.body;
+    const { caption, type, replyTo } = req.body;
 
     // Validate Files
 
@@ -221,22 +268,35 @@ export const sendFileMessage = async (req, res) => {
     const uploadedFiles = [];
 
     for (const file of req.files) {
-      let compressedPath = null;
       try {
         const fileBuffer = getDataUrl(file);
 
         let resourceType = "raw";
-        let fileToUpload = file.path;
-        let fileSize = file.size;
+        let transformations = [
+          { quality: "auto" },
+          { fetch_format: "auto" },
+        ];
 
         if (file.mimetype.startsWith("image/")) {
           resourceType = "image";
-          fileToUpload = file.path;
-        } else if (
-          file.mimetype.startsWith("video/") ||
-          file.mimetype.startsWith("audio/")
-        ) {
+          transformations = [
+            { width: 1280, crop: "limit" },
+            { quality: "auto" },
+            { fetch_format: "auto" },
+          ];
+        } else if (file.mimetype.startsWith("video/")) {
           resourceType = "video";
+          transformations = [
+            { width: 1280, crop: "limit" },
+            { quality: "auto" },
+            { format: "mp4" },
+          ];
+        } else if (file.mimetype.startsWith("audio/")) {
+          resourceType = "video";
+          transformations = [
+            { quality: "auto" },
+            { format: "mp3" },
+          ];
         }
 
         const uploadResult = await cloudinary.uploader.upload(
@@ -245,19 +305,30 @@ export const sendFileMessage = async (req, res) => {
             folder: "chat-media",
             resource_type: resourceType,
             public_id: `${Date.now()}_${file.originalname.split(".")[0]}`,
+            transformation: transformations,
           },
+        );
+
+        const mediaUrls = buildCloudinaryMediaUrls(
+          uploadResult.public_id,
+          uploadResult.resource_type,
+          file.mimetype,
         );
 
         uploadedFiles.push({
           fileName: file.originalname,
           fileSize: file.size,
           mimeType: file.mimetype,
-          url: uploadResult.secure_url,
+          url: mediaUrls.originalUrl,
+          previewUrl: mediaUrls.previewUrl,
+          originalUrl: mediaUrls.originalUrl,
+          thumbnailUrl: mediaUrls.thumbnailUrl,
           publicId: uploadResult.public_id,
           resourceType: uploadResult.resource_type,
           width: uploadResult.width || null,
           height: uploadResult.height || null,
           duration: uploadResult.duration || null,
+          isCompressed: String(file.mimetype).startsWith("image/") || String(file.mimetype).startsWith("video/") || String(file.mimetype).startsWith("audio/"),
         });
       } catch (uploadError) {
         return res.status(500).json({
@@ -281,18 +352,24 @@ export const sendFileMessage = async (req, res) => {
         content: caption || fileData.fileName || "",
         type: type || "file",
         status: "sent",
+        replyTo: replyTo || null,
         fileDetails: {
           fileName: fileData.fileName,
           fileSize: fileData.fileSize,
           mimeType: fileData.mimeType,
           url: fileData.url,
+          previewUrl: fileData.previewUrl || fileData.url,
+          originalUrl: fileData.originalUrl || fileData.url,
+          thumbnailUrl: fileData.thumbnailUrl || fileData.url,
           publicId: fileData.publicId,
           resourceType: fileData.resourceType,
+          isCompressed: Boolean(fileData.isCompressed),
         },
         metadata: {
           width: fileData.width || null,
           height: fileData.height || null,
           duration: fileData.duration || null,
+          thumbnail: fileData.thumbnailUrl || fileData.url || null,
         },
       });
 
@@ -307,6 +384,9 @@ export const sendFileMessage = async (req, res) => {
         const savedMessage = await message.save();
         await savedMessage.populate("sender", "username email profileImage");
         await savedMessage.populate("receiver", "username email profileImage");
+        if (savedMessage.replyTo) {
+          await savedMessage.populate({ path: "replyTo", populate: { path: "sender", select: "username profileImage" } });
+        }
         savedMessages.push(savedMessage);
       }
 
@@ -425,6 +505,17 @@ export const getMessageByChat = async (req, res) => {
     const messages = await MessageModel.find(query)
       .populate("sender", "username email profileImage")
       .populate("receiver", "username email profileImage")
+      .populate({
+        path: "replyTo",
+        populate: {
+          path: "sender",
+          select: "username profileImage",
+        },
+      })
+      .populate({
+        path: "reactions.user",
+        select: "username profileImage",
+      })
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
 
@@ -674,14 +765,19 @@ export const markMessageAsRead = async (req, res) => {
 
       const emitData = {
         message: messageData,
-        senderId: userId,
-        receiverId: senderId,
+        senderId: senderId,
+        receiverId: receiverId,
         status: "read",
         messageId: message._id,
+        chatId: message.chat,
+        readBy: userId,
+        readAt: new Date().toISOString(),
       };
 
       io.to(senderId).emit("markMessage-read", emitData);
+      io.to(senderId).emit("message-read", emitData);
       io.to(receiverId).emit("markMessage-read", emitData);
+      io.to(receiverId).emit("message-read", emitData);
 
       const senderUnreadCount = await MessageModel.countDocuments({
         receiver: senderId,

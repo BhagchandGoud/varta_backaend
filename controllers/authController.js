@@ -6,6 +6,7 @@ import BloomFilter from "../algorithms/bloomFilter.js";
 import mongoose from "mongoose";
 import { LocalStorage } from "node-localstorage";
 import crypto from "crypto";
+import { logger } from "../utils/logger.js";
 
 //insert data from mongodb to bloom filter
 
@@ -18,11 +19,11 @@ const tempUserStore = new Map(); //temparory storage for unverified users
 const createBloomFilter = async () => {
   bloomFilter.clear();
   try {
-    const users = await UserModel.find({}, { username: 1, email: 1 }); // using projection
+    const users = await UserModel.find({}, { username: 1, email: 1 });
 
     for (const user of users) {
-      bloomFilter.add(user.username);
-      bloomFilter.add(user.email);
+      if (user.username) bloomFilter.add(user.username.trim().toLowerCase());
+      if (user.email) bloomFilter.add(user.email.trim().toLowerCase());
     }
 
   } catch (error) {
@@ -44,8 +45,11 @@ export const register = async (req, res) => {
       });
     }
 
-    if (bloomFilter.contains(email)) {
-      const existingUser = await UserModel.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedUsername = username.trim();
+
+    if (bloomFilter.contains(normalizedEmail)) {
+      const existingUser = await UserModel.findOne({ email: normalizedEmail, isEmailVerified: true });
       if (existingUser) {
         return res.status(409).json({
           success: false,
@@ -53,8 +57,8 @@ export const register = async (req, res) => {
         });
       }
     }
-    if (bloomFilter.contains(username.toLowerCase())) {
-      const existingUsername = await UserModel.findOne({ username });
+    if (bloomFilter.contains(normalizedUsername.toLowerCase())) {
+      const existingUsername = await UserModel.findOne({ username: normalizedUsername, isEmailVerified: true });
 
       if (existingUsername) {
         return res.status(409).json({
@@ -68,8 +72,8 @@ export const register = async (req, res) => {
     const hashedPassword = bcrypt.hashSync(password, salt);
 
     const sendOTP = await emailService.sendVerificationOTP({
-      email: email,
-      username: username,
+      email: normalizedEmail,
+      username: normalizedUsername,
     });
 
     if (!sendOTP.success) {
@@ -80,15 +84,26 @@ export const register = async (req, res) => {
     }
 
     const tempUserData = {
-      username: username,
-      email: email,
+      username: normalizedUsername,
+      email: normalizedEmail,
       password: hashedPassword,
       createdAt: Date.now(),
     };
-    tempUserStore.set(email, tempUserData);
+    tempUserStore.set(normalizedEmail, tempUserData);
 
-    localstorage.setItem("username", username);
-    localstorage.setItem("email", email);
+    await UserModel.findOneAndUpdate(
+      { email: normalizedEmail },
+      {
+        username: normalizedUsername,
+        email: normalizedEmail,
+        password: hashedPassword,
+        isEmailVerified: false,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    localstorage.setItem("username", normalizedUsername);
+    localstorage.setItem("email", normalizedEmail);
     localstorage.setItem("verificationPending", "true");
 
     return res.status(200).json({
@@ -115,7 +130,8 @@ export const verification = async (req, res) => {
       });
     }
 
-    const verifyResult = emailService.verifyOTP(email, otp);
+    const normalizedEmail = email.trim().toLowerCase();
+    const verifyResult = emailService.verifyOTP(normalizedEmail, otp);
 
     if (!verifyResult.success) {
       return res.status(400).json({
@@ -124,27 +140,38 @@ export const verification = async (req, res) => {
       });
     }
 
-    const tempUser = tempUserStore.get(email);
-    if (!tempUser) {
+    const tempUser = tempUserStore.get(normalizedEmail);
+    let existingUser = await UserModel.findOne({ email: normalizedEmail });
+
+    if (!tempUser && !existingUser) {
       return res.status(404).json({
         success: false,
         message: "No pending registration found",
       });
     }
 
-    const newUser = new UserModel({
-      username: tempUser.username,
-      email: tempUser.email,
-      isEmailVerified: true,
-      emailVerifiedAt: new Date(),
-      password: tempUser.password,
-    });
+    let savedUser;
+    if (existingUser) {
+      existingUser.isEmailVerified = true;
+      existingUser.emailVerifiedAt = new Date();
+      if (tempUser?.password) existingUser.password = tempUser.password;
+      if (tempUser?.username) existingUser.username = tempUser.username;
+      savedUser = await existingUser.save();
+    } else {
+      const newUser = new UserModel({
+        username: tempUser.username,
+        email: tempUser.email,
+        isEmailVerified: true,
+        emailVerifiedAt: new Date(),
+        password: tempUser.password,
+      });
+      savedUser = await newUser.save();
+    }
 
-    const savedUser = await newUser.save();
     bloomFilter.add(savedUser.username.trim().toLowerCase());
     bloomFilter.add(savedUser.email.trim().toLowerCase());
 
-    tempUserStore.delete(email);
+    tempUserStore.delete(normalizedEmail);
     localstorage.clear();
 
     const token = await generateToken(savedUser._id, res);
@@ -185,11 +212,13 @@ export const resendOTP = async (req, res) => {
       });
     }
 
-    const user = await UserModel.findOne({ email });
-    const resolvedUsername = username || user?.username || email.split("@")[0];
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await UserModel.findOne({ email: normalizedEmail });
+    const tempUser = tempUserStore.get(normalizedEmail);
+    const resolvedUsername = username || tempUser?.username || user?.username || normalizedEmail.split("@")[0];
 
     const sendOTP = await emailService.resendOTP({
-      email,
+      email: normalizedEmail,
       username: resolvedUsername,
     });
 
@@ -223,16 +252,31 @@ export const forgotPassword = async (req, res) => {
       user.passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await user.save();
 
-      const requestOrigin = req.get("origin");
       const configuredFrontendUrl = process.env.FRONTEND_URL || process.env.ORIGIN;
-      const clientUrl = (requestOrigin || configuredFrontendUrl || "http://localhost:5173").replace(/\/$/, "");
+      const requestOrigin = req.get("origin");
+      const clientUrl = (configuredFrontendUrl || requestOrigin || "http://localhost:5173").replace(/\/$/, "");
       const resetUrl = `${clientUrl}/reset-password/${encodeURIComponent(resetToken)}`;
-      await emailService.sendPasswordResetEmail({
+      const emailResult = await emailService.sendPasswordResetEmail({
         email: user.email,
         username: user.username,
         resetToken,
         resetUrl,
       });
+
+      if (!emailResult.success) {
+        user.passwordResetTokenHash = null;
+        user.passwordResetExpiresAt = null;
+        await user.save();
+        logger.error(
+          "password_reset_email_failed",
+          new Error("SMTP provider rejected password reset email"),
+          { smtpCode: emailResult.code || "UNKNOWN" },
+        );
+        return res.status(502).json({
+          success: false,
+          message: "Unable to send the reset email. Please try again later.",
+        });
+      }
     }
 
     return res.status(200).json({
@@ -279,14 +323,8 @@ export const login = async (req, res) => {
       });
     }
 
-    if (!bloomFilter.contains(email.trim().toLowerCase())) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    const user = await UserModel.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await UserModel.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -299,6 +337,28 @@ export const login = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
+      });
+    }
+
+    if (!user.isEmailVerified) {
+      return res.status(200).json({
+        success: true,
+        message: "Please verify your email first!",
+        user: {
+          _id: user._id,
+          username: user.username,
+          email: user.email,
+          profileImage: user.profileImage,
+          isOnline: false,
+          isEmailVerified: false,
+        },
+      });
+    }
+
+    if (user.isSuspended) {
+      return res.status(403).json({
+        success: false,
+        message: "This account has been suspended",
       });
     }
 

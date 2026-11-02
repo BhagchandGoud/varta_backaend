@@ -82,7 +82,7 @@ const otpStore = new OTPStore();
 class EmailService {
   constructor() {
     this.transporter = transporter;
-    this.from = process.env.SMTP_FROM_ADDRESS || 'noreply@yourapp.com';
+    this.from = process.env.SMTP_FROM_ADDRESS || process.env.SMTP_USERNAME;
     this.otpStore = otpStore;
   }
 

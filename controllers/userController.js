@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import UserModel from "../models/UserModel.js";
 import Trie from "../algorithms/searchBar.js";
 import ContactModel from "../models/ContactModel.js";
+import ChatModel from "../models/ChatModel.js";
+import MessageModel from "../models/messageModel.js";
 import cloudinary from "../config/cloudinary.js";
 import EmailService from "../services/emailVerification.js";
 
@@ -25,7 +27,7 @@ const getTrie = async () => {
     if (shouldBuildTrie) {
       trieInstance = new Trie();
 
-      const users = await UserModel.find().select("_id username");
+      const users = await UserModel.find({ isEmailVerified: true }).select("_id username");
 
       for (let user of users) {
         trieInstance.insert(user.username.toLowerCase(), user._id.toString());
@@ -241,6 +243,7 @@ export const searchInSuggestions = async (req, res) => {
 
     const users = await UserModel.find({
       _id: { $in: filteredUserIds },
+      isEmailVerified: true,
     })
       .select(
         "username email profileImage isOnline lastSeen bio locationEnabled location",
@@ -308,6 +311,7 @@ export const search = async (req, res) => {
 
     const users = await UserModel.find({
       _id: { $in: filteredUserIds },
+      isEmailVerified: true,
     })
       .select("username email profileImage isOnline lastSeen bio")
       .limit(20)
@@ -476,6 +480,34 @@ export const updateProfile = async (req, res) => {
   }
 };
 
+export const updateSettings = async (req, res) => {
+  const allowed = [
+    "theme",
+    "messageNotifications",
+    "requestNotifications",
+    "mentionNotifications",
+    "reactionNotifications",
+    "soundNotifications",
+    "browserNotifications",
+  ];
+  const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([key]) => allowed.includes(key)));
+  if (updates.theme !== undefined && !["light", "dark", "system"].includes(updates.theme)) {
+    return res.status(400).json({ success: false, message: "Invalid theme" });
+  }
+  for (const key of allowed.filter((name) => name !== "theme")) {
+    if (updates[key] !== undefined && typeof updates[key] !== "boolean") {
+      return res.status(400).json({ success: false, message: `${key} must be boolean` });
+    }
+  }
+  const user = await UserModel.findByIdAndUpdate(
+    req.user.userId,
+    { $set: Object.fromEntries(Object.entries(updates).map(([key, value]) => [`settings.${key}`, value])) },
+    { new: true, runValidators: true, select: "settings" },
+  );
+  if (!user) return res.status(404).json({ success: false, message: "User not found" });
+  return res.json({ success: true, settings: user.settings });
+};
+
 // ============================================
 // CONTACT REQUEST FUNCTIONS - FIXED
 // ============================================
@@ -636,7 +668,7 @@ export const sendRequest = async (req, res) => {
           targetedUser.location.coordinates[0],
         );
 
-        const MAX_DISTANCE = 10;
+        const MAX_DISTANCE = 25;
 
         if (userDistance > MAX_DISTANCE) {
           return res.status(400).json({
@@ -1073,7 +1105,7 @@ export const getContacts = async (req, res) => {
     })
       .populate(
         "contact",
-        "username email profileImage isOnline lastSeen bio locationEnabled",
+        "username email profileImage isOnline lastSeen bio locationEnabled isEmailVerified",
       )
       .sort({ createdAt: -1 });
 
@@ -1083,6 +1115,11 @@ export const getContacts = async (req, res) => {
         ...c.contact.toObject(),
         status: c.status,
         starredMessages: c.starredMessages,
+        customName: c.customName,
+        notes: c.notes,
+        isFavorite: c.isFavorite,
+        isMuted: c.isMuted,
+        muteUntil: c.muteUntil,
         contactId: c.contact._id,
         createdAt: c.createdAt,
         _id: c.contact._id,
@@ -1343,5 +1380,65 @@ export const updateContactDetails = async (req, res) => {
     return res.json({ success: true, contact });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Delete contacts
+    await ContactModel.deleteMany({
+      $or: [{ user: userId }, { contact: userId }],
+    });
+
+    // Delete messages
+    await MessageModel.deleteMany({
+      $or: [{ sender: userId }, { receiver: userId }],
+    });
+
+    // Delete chats where user is a participant
+    await ChatModel.deleteMany({
+      participants: userId,
+    });
+
+    // Delete user
+    await UserModel.findByIdAndDelete(userId);
+
+    // Socket and online cleanup
+    const io = req.app.locals.io;
+    const onlineUsers = req.app.locals.onlineUsers;
+    if (onlineUsers?.has(userId)) {
+      onlineUsers.delete(userId);
+      const usersArray = Array.from(onlineUsers.values());
+      io?.emit("online-users", usersArray);
+    }
+
+    trieInstance = null;
+
+    res.clearCookie("token", {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Account deleted successfully",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to delete account",
+    });
   }
 };

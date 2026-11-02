@@ -1,27 +1,14 @@
 import mongoose from "mongoose";
 
-const uniqueUserNameGenerator = async () => {
-  let username;
-  let exists = true;
-  let attempts = 0;
-
-  while (exists && attempts < 10) {
-    username =
-      Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
-
-    exists = await UserModel.exists({ username });
-    attempts++;
-  }
-
-  return username;
-};
+const generateUsername = () =>
+  Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
 
 const userSchema = new mongoose.Schema(
   {
     username: {
       type: String,
       required: true,
-      default: uniqueUserNameGenerator,
+      default: generateUsername,
       trim: true,
     },
 
@@ -106,6 +93,25 @@ const userSchema = new mongoose.Schema(
     isEmailVerified: {
       type: Boolean,
       default: false,
+    },
+    role: {
+      type: String,
+      enum: ["user", "admin"],
+      default: "user",
+    },
+    isSuspended: {
+      type: Boolean,
+      default: false,
+    },
+
+    settings: {
+      theme: { type: String, enum: ["light", "dark", "system"], default: "system" },
+      messageNotifications: { type: Boolean, default: true },
+      requestNotifications: { type: Boolean, default: true },
+      mentionNotifications: { type: Boolean, default: true },
+      reactionNotifications: { type: Boolean, default: true },
+      soundNotifications: { type: Boolean, default: true },
+      browserNotifications: { type: Boolean, default: false },
     },
 
     emailVerifiedAt: {

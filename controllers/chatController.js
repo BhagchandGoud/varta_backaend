@@ -66,7 +66,13 @@ export const getOrCreateChat = async (req, res) => {
       .where("isDeleted", false)
       .populate("sender", "username email profileImage")
       .populate("receiver", "username email profileImage")
-      .populate("replyTo")
+      .populate({
+        path: "replyTo",
+        populate: {
+          path: "sender",
+          select: "username profileImage",
+        },
+      })
       .populate({
         path: "reactions.user",
         select: "username profileImage",
@@ -94,9 +100,10 @@ export const getUserChats = async (req, res) => {
   try {
     const userId = req.user.userId;
 
+    const isArchived = req.query.archived === "true";
     const chats = await ChatModel.find({
       participants: userId,
-      archivedBy: { $ne: userId },
+      archivedBy: isArchived ? userId : { $ne: userId },
     })
       .populate("participants", "username email profileImage isOnline lastSeen")
       .populate({
@@ -193,7 +200,13 @@ export const getChatById = async (req, res) => {
       .where("isDeleted", false)
       .populate("sender", "username email profileImage")
       .populate("receiver", "username email profileImage")
-      .populate("replyTo")
+      .populate({
+        path: "replyTo",
+        populate: {
+          path: "sender",
+          select: "username profileImage",
+        },
+      })
       .populate({
         path: "reactions.user",
         select: "username profileImage",
@@ -244,14 +257,10 @@ export const deleteChat = async (req, res) => {
     // Soft delete - mark all messages as deleted for this user
     await MessageModel.updateMany(
       { chat: chatId },
-      { isDeleted: true }
+      { $addToSet: { deletedFor: userId } }
     );
 
-    // Or hard delete (uncomment permanent deletion)
-    // await MessageModel.deleteMany({ chat: chatId });
-    // await chat.deleteOne();
-
-    // Instead of deleting, archive for user
+    // Archive for user
     if (!chat.archivedBy.includes(userId)) {
       chat.archivedBy.push(userId);
       await chat.save();

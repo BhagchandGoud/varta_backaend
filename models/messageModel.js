@@ -87,6 +87,21 @@ const messageSchema = new mongoose.Schema(
         default: null,
       },
 
+      previewUrl: {
+        type: String,
+        default: null,
+      },
+
+      originalUrl: {
+        type: String,
+        default: null,
+      },
+
+      thumbnailUrl: {
+        type: String,
+        default: null,
+      },
+
       publicId: {
         type: String,
         default: null,
@@ -96,6 +111,11 @@ const messageSchema = new mongoose.Schema(
         type: String,
         enum: ["image", "video", "raw"],
         default: null,
+      },
+
+      isCompressed: {
+        type: Boolean,
+        default: false,
       },
     },
 
@@ -118,6 +138,16 @@ const messageSchema = new mongoose.Schema(
 
       thumbnail: {
         type: String,
+        default: null,
+      },
+
+      previewWidth: {
+        type: Number,
+        default: null,
+      },
+
+      previewHeight: {
+        type: Number,
         default: null,
       },
     },

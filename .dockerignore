@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+server.key
+*.key
+*.pem
+*.cert
+uploads
+localStorage
+npm-debug.log*

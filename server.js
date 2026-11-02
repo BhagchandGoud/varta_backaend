@@ -4,17 +4,23 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import { createServer as createHttpServer } from "http";
 import { Server } from "socket.io";
-import { networkInterfaces } from "os";
+
 import UserModel from "./models/UserModel.js";
-import MessageModel from "./models/messageModel.js";
+
 import path from 'path';
 import helmet from 'helmet'
+import { apiLimiter, errorResponse } from "./middlewares/security.js";
+import { logger } from "./utils/logger.js";
 
 import dbConnection from "./connection/db.js";
+import { connectRedis, redisClient } from "./redis.js";
 import { serverRoutes } from "./serverRoutes.js";
 import GEOHASH from "./algorithms/geoHash.js";
 import Queue from "./algorithms/queue/messageQueue.js";
 import EmailService from "./services/emailVerification.js";
+import { findNearbyUsers } from "./services/nearbyUsers.js";
+import dns from 'dns';
+
 
 
 
@@ -28,17 +34,20 @@ import {
 
 dotenv.config();
 
-function getLocalIP() {
-  const nets = networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === "IPv4" && !net.internal) {
-        return net.address;
-      }
-    }
-  }
-  return "localhost";
-}
+// function getLocalIP() {
+//   const nets = networkInterfaces();
+//   for (const name of Object.keys(nets)) {
+//     for (const net of nets[name]) {
+//       if (net.family === "IPv4" && !net.internal) {
+//         return net.address;
+//       }
+//     }
+//   }
+//   return "localhost";
+// }
+
+dns.setServers(['1.1.1.1' , '8.8.8.8']);
+
 const port = process.env.PORT || 5000;
 const app = express();
 
@@ -50,25 +59,35 @@ const allowedOrigins = [
   process.env.DEV_TUNNEL_ORIGIN,
   ...(process.env.CORS_ORIGINS || "").split(","),
   "http://localhost:5173",
-  "https://localhost:5173",
-  "http://localhost:5000",
-  "https://localhost:5000",
+  "http://localhost",
+  "https://localhost",
+  // "https://localhost:5173",
+  "http://localhost:5050",
   "http://192.168.56.1:5173",
-  "https://192.168.56.1:5173",
+  // "https://192.168.56.1:5173",
   "http://192.168.56.1:5000",
-  "https://192.168.56.2:5173",
-  "https://192.168.56.1:5000",
+  "http://10.78.11.54:5173",
+  "http://10.78.11.54:5000",
+  "http://10.192.27.54:5173",
+  "http://10.192.27.54:5000",
+  "http://10.41.169.54:5173",
+  "http://10.41.169.54:5000",
+  "http://10.165.185.54:5173",
+  "http://10.165.185.54:5000",
+  // "https://192.168.56.2:5173",
+  // "https://192.168.56.1:5000",
   "http://192.168.1.144:5173",
-  "https://192.168.1.144:5173",
+  // "https://192.168.1.144:5173",
   "http://192.168.1.144:5000",
-  "https://192.168.1.144:5000",
-  "https://10.10.118.168:5173",
-  "https://10.0.0.2:5173"
+  // "https://192.168.1.144:5000",
+  // "https://10.10.118.168:5173",
+  // "https://10.0.0.2:5173"
 ].map((origin) => origin?.trim()).filter(Boolean);
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
   if (allowedOrigins.includes(origin)) return true;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
   if (origin && origin.endsWith(".devtunnels.ms")) return true;
   return false;
 };
@@ -114,6 +133,15 @@ app.use(
   }),
 );
 
+app.use('/api/v3', (req, res, next) => {
+  if (
+    req.path === '/health' ||
+    req.path === '/auth/login' ||
+    req.path === '/auth/register'
+  ) return next();
+  return apiLimiter(req, res, next);
+});
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
@@ -121,12 +149,7 @@ app.use(helmet());
 
 serverRoutes(app);
 
-app.use((err, req, res, next) => {
-  res.status(500).json({
-    success: false,
-    message: err.message || "Internal server error",
-  });
-});
+app.use(errorResponse);
 
 const io = new Server(server, {
   cors: {
@@ -149,7 +172,7 @@ const messageQueue = new Queue();
 const emailService = new EmailService();
 const nearbyEmailCooldown = new Map();
 
-let processing = false;
+// let processing = false;
 
 app.locals.messageQueue = messageQueue;
 app.locals.processQueue = processQueue;
@@ -220,7 +243,14 @@ io.on("connection", (socket) => {
     try {
       const { latitude, longitude } = data;
 
-      if (typeof latitude !== "number" || typeof longitude !== "number") {
+      if (
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude) ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180
+      ) {
         return socket.emit("location-error", {
           success: false,
           message: "Invalid latitude or longitude.",
@@ -260,38 +290,12 @@ io.on("connection", (socket) => {
         },
       );
 
-
-      const neighbours = geoHash.neighbors(hash);
-      const searchHashes = [hash, ...Object.values(neighbours)];
-
-      const candidateUsers = Array.from(onlineUsers.values()).filter((user) => {
-        return (
-          user.userId !== socket.userId &&
-          user.latitude != null &&
-          user.longitude != null &&
-          searchHashes.includes(user.geoHash)
-        );
+      const nearbyUsers = await findNearbyUsers({
+        latitude,
+        longitude,
+        currentUserId: socket.userId,
+        onlineUsers,
       });
-
-      const nearbyUsers = candidateUsers
-        .map((user) => {
-          const distance = geoHash.haversineDistance(
-            latitude,
-            longitude,
-            user.latitude,
-            user.longitude,
-          );
-
-          return {
-            userId: user.userId,
-            name: user.name,
-            latitude: user.latitude,
-            longitude: user.longitude,
-            distance: Number(distance.toFixed(2)),
-          };
-        })
-        .filter((user) => user.distance <= 10)
-        .sort((a, b) => a.distance - b.distance);
 
       const lastNearbyEmail = nearbyEmailCooldown.get(socket.userId) || 0;
       if (nearbyUsers.length > 0 && Date.now() - lastNearbyEmail > 10 * 60 * 1000) {
@@ -326,25 +330,51 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("disconnect", async () => {
+    if (socket.userId) {
+      const existingUser = onlineUsers.get(socket.userId);
+      if (existingUser && existingUser.socketId === socket.id) {
+        onlineUsers.delete(socket.userId);
+        emitOnlineUsers();
+        try {
+          await UserModel.findByIdAndUpdate(socket.userId, {
+            isOnline: false,
+            lastSeen: new Date(),
+          });
+        } catch (error) {
+          // ignore disconnect error
+        }
+      }
+    }
+  });
 });
 
 const start = async () => {
+  try {
+    await dbConnection();
+    logger.info("mongodb_connected");
+  } catch (error) {
+    logger.error("mongodb_connection_failed", error);
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    await connectRedis();
+    app.locals.redisClient = redisClient;
+  } catch (error) {
+    logger.error("redis_connection_failed", error);
+    process.exit(1);
+  }
+
   const srv = server.listen(port, "0.0.0.0", () => {
-    console.log(`Server listening on port ${port}`);
+    logger.info("server_listening", { port });
   });
 
   srv.on("error", (error) => {
-    console.error(`Server failed to listen on port ${port}: ${error.message}`);
+    logger.error("server_listen_failed", error, { port });
     process.exitCode = 1;
   });
-
-  try {
-    await dbConnection();
-    console.log("MongoDB connected");
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
 };
 
 start();

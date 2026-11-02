@@ -13,7 +13,7 @@ export const generateToken = async(userId, res)=>{
     res.cookie('token', token, {
         httpOnly: true,
         sameSite: "lax",
-        secure: false,
+        secure: process.env.NODE_ENV === "production",
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: '/'
     });

@@ -44,6 +44,12 @@ export const processQueue = async () => {
         // Populate sender and receiver details
         await savedMessage.populate("sender", "username email profileImage");
         await savedMessage.populate("receiver", "username email profileImage");
+        if (savedMessage.replyTo) {
+          await savedMessage.populate({
+            path: "replyTo",
+            populate: { path: "sender", select: "username profileImage" },
+          });
+        }
 
         // Update the schema's latest-message reference and unread count.
         chat.latestMessage = savedMessage._id;
@@ -182,13 +188,18 @@ export const handleMarkRead = (
     receiverId: receiver,
     status: status || "read",
     ...(message && { message }),
+    ...(message?.chat && { chatId: message.chat.toString() }),
+    readBy: receiver,
+    readAt: new Date().toISOString(),
   };
 
   // sender updates read mark
   io.to(sender).emit("markMessage-read", emitData);
+  io.to(sender).emit("message-read", emitData);
 
   // receiver updates unread mark if needed
   io.to(receiver).emit("markMessage-read", emitData);
+  io.to(receiver).emit("message-read", emitData);
 };
 
 
