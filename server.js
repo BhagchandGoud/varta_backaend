@@ -48,7 +48,7 @@ dotenv.config();
 
 dns.setServers(['1.1.1.1' , '8.8.8.8']);
 
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 8080;
 const app = express();
 
 const server = createHttpServer(app);

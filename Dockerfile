@@ -12,5 +12,5 @@ RUN mkdir -p /localStorage /app/uploads \
 
 USER node
 
-EXPOSE 5000
+EXPOSE 8080
 CMD ["npm", "start"]
