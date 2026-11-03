@@ -359,12 +359,19 @@ const start = async () => {
     return;
   }
 
-  try {
-    await connectRedis();
-    app.locals.redisClient = redisClient;
-  } catch (error) {
-    logger.error("redis_connection_failed", error);
-    process.exit(1);
+  if (process.env.REDIS_URL) {
+    try {
+      await connectRedis();
+      app.locals.redisClient = redisClient;
+    } catch (error) {
+      logger.error("redis_connection_failed", error);
+      process.exit(1);
+      return;
+    }
+  } else {
+    logger.warn("redis_not_configured", {
+      message: "REDIS_URL is not set; continuing without Redis",
+    });
   }
 
   const srv = server.listen(port, "0.0.0.0", () => {
