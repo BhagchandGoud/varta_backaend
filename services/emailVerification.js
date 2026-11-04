@@ -166,6 +166,41 @@ class EmailService {
         throw new Error('Recipient email is required');
       }
 
+      if (process.env.RESEND_API_KEY) {
+        if (attachments.length > 0) {
+          throw new Error('Attachments are not supported with the Resend transport');
+        }
+
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM_EMAIL || this.from,
+            to: [to],
+            subject,
+            html,
+            text: text || html.replace(/<[^>]*>/g, ''),
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          const error = new Error(result.message || 'Resend rejected the email');
+          error.code = result.name || `RESEND_HTTP_${response.status}`;
+          throw error;
+        }
+
+        return {
+          success: true,
+          messageId: result.id,
+          response: result,
+        };
+      }
+
       const mailOptions = {
         from: this.from,
         to,
