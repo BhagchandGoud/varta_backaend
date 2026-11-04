@@ -6,6 +6,11 @@ dotenv.config();
 
 export const redisClient = createClient({
   url: process.env.REDIS_URL,
+  socket: {
+    connectTimeout: 10000,
+    keepAlive: 5000,
+    reconnectStrategy: (retries) => Math.min(1000 * 2 ** retries, 30000),
+  },
 });
 
 redisClient.on("error", (err) => {

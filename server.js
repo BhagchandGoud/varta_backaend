@@ -19,7 +19,6 @@ import GEOHASH from "./algorithms/geoHash.js";
 import Queue from "./algorithms/queue/messageQueue.js";
 import EmailService from "./services/emailVerification.js";
 import { findNearbyUsers } from "./services/nearbyUsers.js";
-import dns from 'dns';
 
 
 
@@ -46,11 +45,9 @@ dotenv.config();
 //   return "localhost";
 // }
 
-dns.setServers(['1.1.1.1' , '8.8.8.8']);
-
 const port = process.env.PORT || 5050;
 const app = express();
-
+app.set("trust proxy", 1);
 const server = createHttpServer(app);
 
 const allowedOrigins = [
@@ -59,29 +56,8 @@ const allowedOrigins = [
   process.env.DEV_TUNNEL_ORIGIN,
   ...(process.env.CORS_ORIGINS || "").split(","),
   "http://localhost:5173",
-  "http://localhost",
-  "https://localhost",
-  // "https://localhost:5173",
   "http://localhost:5050",
-  "http://192.168.56.1:5173",
-  // "https://192.168.56.1:5173",
-  "http://192.168.56.1:5000",
-  "http://10.78.11.54:5173",
-  "http://10.78.11.54:5000",
-  "http://10.192.27.54:5173",
-  "http://10.192.27.54:5000",
-  "http://10.41.169.54:5173",
-  "http://10.41.169.54:5000",
-  "http://10.165.185.54:5173",
-  "http://10.165.185.54:5000",
-  // "https://192.168.56.2:5173",
-  // "https://192.168.56.1:5000",
-  "http://192.168.1.144:5173",
-  // "https://192.168.1.144:5173",
-  "http://192.168.1.144:5000",
-  // "https://192.168.1.144:5000",
-  // "https://10.10.118.168:5173",
-  // "https://10.0.0.2:5173"
+
 ].map((origin) => origin?.trim()).filter(Boolean);
 
 const isAllowedOrigin = (origin) => {
