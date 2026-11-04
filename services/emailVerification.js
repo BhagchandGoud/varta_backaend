@@ -3,9 +3,21 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 dotenv.config();
 
+const maskEmail = (email = "") => {
+  const [localPart, domain] = email.split("@");
+  if (!domain) return "[invalid-email]";
+  return `${localPart.slice(0, 2)}***@${domain}`;
+};
+
 // email transporter setup
 const createTransporter = () => {
   const smtpPassword = process.env.SMTP_PASSWORD?.replace(/\s+/g, "");
+  console.log("[email] configuring transport", {
+    provider: process.env.RESEND_API_KEY ? "resend" : "smtp",
+    host: process.env.SMTP_HOST || null,
+    usernameConfigured: Boolean(process.env.SMTP_USERNAME),
+    resendFromConfigured: Boolean(process.env.RESEND_FROM_EMAIL),
+  });
 
   // For Gmail
   if (process.env.SMTP_HOST === 'smtp.gmail.com') {
@@ -171,6 +183,11 @@ class EmailService {
           throw new Error('Attachments are not supported with the Resend transport');
         }
 
+        console.log("[email] sending via Resend", {
+          to: maskEmail(to),
+          subject,
+          from: process.env.RESEND_FROM_EMAIL || this.from,
+        });
         const response = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: {
@@ -187,6 +204,13 @@ class EmailService {
           signal: AbortSignal.timeout(15000),
         });
         const result = await response.json().catch(() => ({}));
+        console.log("[email] Resend response", {
+          status: response.status,
+          ok: response.ok,
+          id: result.id || null,
+          code: result.name || null,
+          message: result.message || null,
+        });
 
         if (!response.ok) {
           const error = new Error(result.message || 'Resend rejected the email');
@@ -210,13 +234,27 @@ class EmailService {
         attachments,
       };
 
+      console.log("[email] sending via SMTP", {
+        to: maskEmail(to),
+        subject,
+        host: process.env.SMTP_HOST || null,
+        port: process.env.SMTP_PORT || null,
+      });
       const info = await this.transporter.sendMail(mailOptions);
+      console.log("[email] SMTP accepted message", {
+        messageId: info.messageId || null,
+        response: info.response || null,
+      });
       return { 
         success: true, 
         messageId: info.messageId,
         response: info.response,
       };
     } catch (error) {
+      console.log("[email] delivery failed", {
+        code: error.code || null,
+        message: error.message || "Unknown email error",
+      });
       return { 
         success: false, 
         error: error.message,
