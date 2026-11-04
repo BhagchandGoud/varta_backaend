@@ -178,6 +178,10 @@ class EmailService {
         throw new Error('Recipient email is required');
       }
 
+      if (process.env.NODE_ENV === 'production' && !process.env.RESEND_API_KEY) {
+        throw new Error('RESEND_API_KEY is not configured');
+      }
+
       if (process.env.RESEND_API_KEY) {
         if (attachments.length > 0) {
           throw new Error('Attachments are not supported with the Resend transport');
