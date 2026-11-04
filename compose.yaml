@@ -9,7 +9,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8080
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: ${REDIS_URL}
     expose:
       - "8080"
     ports:
