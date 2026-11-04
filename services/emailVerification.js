@@ -130,6 +130,7 @@ class EmailService {
 //    verify otp
   verifyOTP(email, userOTP) {
     const stored = this.otpStore.get(email);
+    const normalizedOTP = String(userOTP ?? "").trim();
     
     if (!stored) {
       return { 
@@ -154,12 +155,13 @@ class EmailService {
       };
     }
 
-    if (stored.otp !== userOTP) {
+    if (stored.otp !== normalizedOTP) {
       stored.attempts += 1;
       this.otpStore.set(email, stored);
       return { 
         success: false, 
-        message: `Invalid OTP. ${stored.maxAttempts - stored.attempts} attempts remaining.` 
+        message: `Invalid OTP. ${stored.maxAttempts - stored.attempts} attempts remaining.`,
+        attemptsRemaining: stored.maxAttempts - stored.attempts,
       };
     }
 

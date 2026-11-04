@@ -137,6 +137,8 @@ export const verification = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: verifyResult.message,
+        attemptsRemaining: verifyResult.attemptsRemaining,
+        expired: verifyResult.message?.includes("expired"),
       });
     }
 
