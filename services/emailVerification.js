@@ -9,6 +9,9 @@ const createTransporter = () => {
   if (process.env.SMTP_HOST === 'smtp.gmail.com') {
     return nodemailer.createTransport({
       service: 'gmail',
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
         user: process.env.SMTP_USERNAME,
         pass: process.env.SMTP_PASSWORD, // App Password
@@ -21,6 +24,9 @@ const createTransporter = () => {
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT),
     secure: process.env.SMTP_SECURE === 'true',
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     auth: {
       user: process.env.SMTP_USERNAME,
       pass: process.env.SMTP_PASSWORD,
