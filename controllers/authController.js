@@ -79,7 +79,7 @@ export const register = async (req, res) => {
     if (!sendOTP.success) {
       return res.status(500).json({
         success: false,
-        message: "Failed to send verification email",
+        message: sendOTP.message || "Failed to send verification email",
       });
     }
 

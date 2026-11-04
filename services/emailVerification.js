@@ -5,16 +5,20 @@ dotenv.config();
 
 // email transporter setup
 const createTransporter = () => {
+  const smtpPassword = process.env.SMTP_PASSWORD?.replace(/\s+/g, "");
+
   // For Gmail
   if (process.env.SMTP_HOST === 'smtp.gmail.com') {
     return nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
       connectionTimeout: 10000,
       greetingTimeout: 10000,
       socketTimeout: 15000,
       auth: {
         user: process.env.SMTP_USERNAME,
-        pass: process.env.SMTP_PASSWORD, // App Password
+        pass: smtpPassword, // Gmail app password, with display spaces removed
       },
     });
   }
@@ -29,7 +33,7 @@ const createTransporter = () => {
     socketTimeout: 15000,
     auth: {
       user: process.env.SMTP_USERNAME,
-      pass: process.env.SMTP_PASSWORD,
+      pass: smtpPassword,
     },
     tls: {
       rejectUnauthorized: false, // For development only
