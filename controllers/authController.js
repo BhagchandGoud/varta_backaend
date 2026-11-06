@@ -90,6 +90,7 @@ export const register = async (req, res) => {
       createdAt: Date.now(),
     };
     tempUserStore.set(normalizedEmail, tempUserData);
+    const otpData = emailService.getOTPData(normalizedEmail);
 
     await UserModel.findOneAndUpdate(
       { email: normalizedEmail },
@@ -98,6 +99,10 @@ export const register = async (req, res) => {
         email: normalizedEmail,
         password: hashedPassword,
         isEmailVerified: false,
+        verificationOTP: otpData?.otp || null,
+        verificationOTPExpiry: otpData ? new Date(otpData.expiresAt) : null,
+        verificationAttempts: 0,
+        lastVerificationRequest: new Date(),
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
@@ -131,7 +136,7 @@ export const verification = async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const verifyResult = emailService.verifyOTP(normalizedEmail, otp);
+    const verifyResult = await emailService.verifyOTP(normalizedEmail, otp);
 
     if (!verifyResult.success) {
       return res.status(400).json({
@@ -181,7 +186,13 @@ export const verification = async (req, res) => {
     emailService.sendWelcomeEmail({
       email: savedUser.email,
       username: savedUser.username,
-    }).catch(() => {});
+    }).then((result) => {
+      if (!result?.success) {
+        console.error("[email] welcome email failed", result?.error || "Unknown email error");
+      }
+    }).catch((error) => {
+      console.error("[email] welcome email failed", error);
+    });
 
     return res.status(201).json({
       success: true,

@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import UserModel from "../models/UserModel.js";
 dotenv.config();
 
 const maskEmail = (email = "") => {
@@ -9,11 +10,44 @@ const maskEmail = (email = "") => {
   return `${localPart.slice(0, 2)}***@${domain}`;
 };
 
+const postJsonWithRedirects = async (url, body, timeoutMs = 30000) => {
+  let currentUrl = url;
+
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    const response = await fetch(currentUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body,
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return response;
+    }
+
+    const location = response.headers.get("location");
+    if (!location) return response;
+
+    currentUrl = new URL(location, currentUrl).toString();
+  }
+
+  throw new Error("Google Apps Script redirected the email request too many times");
+};
+
+const isResendEnabled = () =>
+  process.env.EMAIL_PROVIDER === "resend" ||
+  (!process.env.EMAIL_PROVIDER &&
+    Boolean(process.env.RESEND_API_KEY) &&
+    !process.env.SMTP_HOST);
+
 // email transporter setup
 const createTransporter = () => {
   const smtpPassword = process.env.SMTP_PASSWORD?.replace(/\s+/g, "");
   console.log("[email] configuring transport", {
-    provider: process.env.RESEND_API_KEY ? "resend" : "smtp",
+    provider: isResendEnabled() ? "resend" : "smtp",
     host: process.env.SMTP_HOST || null,
     usernameConfigured: Boolean(process.env.SMTP_USERNAME),
     resendFromConfigured: Boolean(process.env.RESEND_FROM_EMAIL),
@@ -127,9 +161,33 @@ class EmailService {
     return otpData;
   }
 
+  getOTPData(email) {
+    return this.otpStore.get(email);
+  }
+
 //    verify otp
-  verifyOTP(email, userOTP) {
-    const stored = this.otpStore.get(email);
+  async verifyOTP(email, userOTP) {
+    let stored = this.otpStore.get(email);
+
+    if (!stored) {
+      const user = await UserModel.findOne({
+        email,
+        isEmailVerified: false,
+      })
+        .select("+verificationOTP +verificationOTPExpiry +verificationAttempts")
+        .lean();
+
+      if (user?.verificationOTP && user.verificationOTPExpiry) {
+        stored = {
+          otp: user.verificationOTP,
+          expiresAt: new Date(user.verificationOTPExpiry).getTime(),
+          attempts: user.verificationAttempts || 0,
+          maxAttempts: 5,
+        };
+        this.otpStore.set(email, stored);
+      }
+    }
+
     const normalizedOTP = String(userOTP ?? "").trim();
     
     if (!stored) {
@@ -158,6 +216,10 @@ class EmailService {
     if (stored.otp !== normalizedOTP) {
       stored.attempts += 1;
       this.otpStore.set(email, stored);
+      await UserModel.updateOne(
+        { email, isEmailVerified: false },
+        { $set: { verificationAttempts: stored.attempts } },
+      );
       return { 
         success: false, 
         message: `Invalid OTP. ${stored.maxAttempts - stored.attempts} attempts remaining.`,
@@ -167,6 +229,16 @@ class EmailService {
 
     // Success - clear OTP
     this.otpStore.delete(email);
+    await UserModel.updateOne(
+      { email, isEmailVerified: false },
+      {
+        $unset: {
+          verificationOTP: 1,
+          verificationOTPExpiry: 1,
+        },
+        $set: { verificationAttempts: 0 },
+      },
+    );
     return { 
       success: true, 
       message: 'OTP verified successfully' 
@@ -174,19 +246,83 @@ class EmailService {
   }
 
   // send email
+  
+  // send email
   async sendEmail({ to, subject, html, text, attachments = [] }) {
     try {
       if (!to) {
-        throw new Error('Recipient email is required');
+        throw new Error("Recipient email is required");
       }
 
-      if (process.env.NODE_ENV === 'production' && !process.env.RESEND_API_KEY) {
-        throw new Error('RESEND_API_KEY is not configured');
-      }
-
-      if (process.env.RESEND_API_KEY) {
+      // Google Apps Script email transport
+      if (process.env.GOOGLE_APPS_SCRIPT_URL) {
         if (attachments.length > 0) {
-          throw new Error('Attachments are not supported with the Resend transport');
+          throw new Error(
+            "Attachments are not supported with Google Apps Script"
+          );
+        }
+
+        if (!process.env.VARTA_EMAIL_SECRET) {
+          throw new Error("VARTA_EMAIL_SECRET is not configured");
+        }
+
+        console.log("[email] sending via Google Apps Script", {
+          to: maskEmail(to),
+          subject,
+        });
+
+        const response = await postJsonWithRedirects(
+          process.env.GOOGLE_APPS_SCRIPT_URL,
+          JSON.stringify({
+            secret: process.env.VARTA_EMAIL_SECRET,
+            to,
+            subject,
+            html,
+            text: text || html?.replace(/<[^>]*>/g, ""),
+          }),
+        );
+
+        const responseText = await response.text();
+
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch {
+          throw new Error(
+            `Invalid Google Apps Script response: ${responseText.slice(0, 200)}`
+          );
+        }
+
+        console.log("[email] Google Apps Script response", {
+          status: response.status,
+          success: result.success,
+          message: result.message || null,
+        });
+
+        if (!response.ok || !result.success) {
+          throw new Error(
+            result.message || "Google Apps Script rejected the email"
+          );
+        }
+
+        return {
+          success: true,
+          response: result,
+        };
+      }
+
+      // Existing Resend transport
+      if (process.env.NODE_ENV === "production" &&
+          isResendEnabled() &&
+          !process.env.RESEND_API_KEY) {
+        throw new Error("RESEND_API_KEY is not configured");
+      }
+
+      if (isResendEnabled()) {
+        if (attachments.length > 0) {
+          throw new Error(
+            "Attachments are not supported with the Resend transport"
+          );
         }
 
         console.log("[email] sending via Resend", {
@@ -194,34 +330,32 @@ class EmailService {
           subject,
           from: process.env.RESEND_FROM_EMAIL || this.from,
         });
-        const response = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM_EMAIL || this.from,
-            to: [to],
-            subject,
-            html,
-            text: text || html.replace(/<[^>]*>/g, ''),
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
+
+        const response = await fetch(
+          "https://api.resend.com/emails",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: process.env.RESEND_FROM_EMAIL || this.from,
+              to: [to],
+              subject,
+              html,
+              text: text || html?.replace(/<[^>]*>/g, ""),
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+
         const result = await response.json().catch(() => ({}));
-        console.log("[email] Resend response", {
-          status: response.status,
-          ok: response.ok,
-          id: result.id || null,
-          code: result.name || null,
-          message: result.message || null,
-        });
 
         if (!response.ok) {
-          const error = new Error(result.message || 'Resend rejected the email');
-          error.code = result.name || `RESEND_HTTP_${response.status}`;
-          throw error;
+          throw new Error(
+            result.message || "Resend rejected the email"
+          );
         }
 
         return {
@@ -231,43 +365,132 @@ class EmailService {
         };
       }
 
+      // Existing SMTP fallback
       const mailOptions = {
         from: this.from,
         to,
         subject,
         html,
-        text: text || html.replace(/<[^>]*>/g, ''),
+        text: text || html?.replace(/<[^>]*>/g, ""),
         attachments,
       };
 
-      console.log("[email] sending via SMTP", {
-        to: maskEmail(to),
-        subject,
-        host: process.env.SMTP_HOST || null,
-        port: process.env.SMTP_PORT || null,
-      });
       const info = await this.transporter.sendMail(mailOptions);
-      console.log("[email] SMTP accepted message", {
-        messageId: info.messageId || null,
-        response: info.response || null,
-      });
-      return { 
-        success: true, 
+
+      return {
+        success: true,
         messageId: info.messageId,
         response: info.response,
       };
+
     } catch (error) {
-      console.log("[email] delivery failed", {
+      console.error("[email] delivery failed", {
         code: error.code || null,
         message: error.message || "Unknown email error",
       });
-      return { 
-        success: false, 
+
+      return {
+        success: false,
         error: error.message,
         code: error.code,
       };
     }
   }
+
+  // async sendEmail({ to, subject, html, text, attachments = [] }) {
+  //   try {
+  //     if (!to) {
+  //       throw new Error('Recipient email is required');
+  //     }
+
+  //     if (process.env.NODE_ENV === "production" && isResendEnabled() && !process.env.RESEND_API_KEY) {
+  //       throw new Error("RESEND_API_KEY is not configured");
+  //     }
+
+  //     if (isResendEnabled()) {
+  //       if (attachments.length > 0) {
+  //         throw new Error('Attachments are not supported with the Resend transport');
+  //       }
+
+  //       console.log("[email] sending via Resend", {
+  //         to: maskEmail(to),
+  //         subject,
+  //         from: process.env.RESEND_FROM_EMAIL || this.from,
+  //       });
+  //       const response = await fetch('https://api.resend.com/emails', {
+  //         method: 'POST',
+  //         headers: {
+  //           Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+  //           'Content-Type': 'application/json',
+  //         },
+  //         body: JSON.stringify({
+  //           from: process.env.RESEND_FROM_EMAIL || this.from,
+  //           to: [to],
+  //           subject,
+  //           html,
+  //           text: text || html.replace(/<[^>]*>/g, ''),
+  //         }),
+  //         signal: AbortSignal.timeout(15000),
+  //       });
+  //       const result = await response.json().catch(() => ({}));
+  //       console.log("[email] Resend response", {
+  //         status: response.status,
+  //         ok: response.ok,
+  //         id: result.id || null,
+  //         code: result.name || null,
+  //         message: result.message || null,
+  //       });
+
+  //       if (!response.ok) {
+  //         const error = new Error(result.message || 'Resend rejected the email');
+  //         error.code = result.name || `RESEND_HTTP_${response.status}`;
+  //         throw error;
+  //       }
+
+  //       return {
+  //         success: true,
+  //         messageId: result.id,
+  //         response: result,
+  //       };
+  //     }
+
+  //     const mailOptions = {
+  //       from: this.from,
+  //       to,
+  //       subject,
+  //       html,
+  //       text: text || html.replace(/<[^>]*>/g, ''),
+  //       attachments,
+  //     };
+
+  //     console.log("[email] sending via SMTP", {
+  //       to: maskEmail(to),
+  //       subject,
+  //       host: process.env.SMTP_HOST || null,
+  //       port: process.env.SMTP_PORT || null,
+  //     });
+  //     const info = await this.transporter.sendMail(mailOptions);
+  //     console.log("[email] SMTP accepted message", {
+  //       messageId: info.messageId || null,
+  //       response: info.response || null,
+  //     });
+  //     return { 
+  //       success: true, 
+  //       messageId: info.messageId,
+  //       response: info.response,
+  //     };
+  //   } catch (error) {
+  //     console.log("[email] delivery failed", {
+  //       code: error.code || null,
+  //       message: error.message || "Unknown email error",
+  //     });
+  //     return { 
+  //       success: false, 
+  //       error: error.message,
+  //       code: error.code,
+  //     };
+  //   }
+  // }
 
   //send otp
   async sendVerificationOTP({ email, username }) {
@@ -276,7 +499,18 @@ class EmailService {
       const otp = this.generateOTP(6);
       
       // Store OTP with 10-minute expiry
-      this.storeOTP(email, otp, 10);
+      const otpData = this.storeOTP(email, otp, 10);
+      await UserModel.updateOne(
+        { email, isEmailVerified: false },
+        {
+          $set: {
+            verificationOTP: otp,
+            verificationOTPExpiry: new Date(otpData.expiresAt),
+            verificationAttempts: 0,
+            lastVerificationRequest: new Date(),
+          },
+        },
+      );
 
       // Generate HTML template
       const html = this.generateVerificationHTML({ username, otp });

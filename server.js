@@ -57,6 +57,7 @@ const allowedOrigins = [
   ...(process.env.CORS_ORIGINS || "").split(","),
   "http://localhost:5173",
   "http://localhost:5050",
+  "https://bhagchandgoud.github.io",
 
 ].map((origin) => origin?.trim()).filter(Boolean);
 
@@ -284,7 +285,13 @@ io.on("connection", (socket) => {
             email: updatedUser.email,
             username: updatedUser.username,
             nearbyUsers: nearbyUserRecords,
-          }).catch(() => {});
+          }).then((result) => {
+            if (!result?.success) {
+              console.error("[email] nearby users email failed", result?.error || "Unknown email error");
+            }
+          }).catch((error) => {
+            console.error("[email] nearby users email failed", error);
+          });
         }
       }
 

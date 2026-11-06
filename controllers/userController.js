@@ -632,7 +632,13 @@ export const sendRequest = async (req, res) => {
             email: targetedUser.email,
             recipientName: targetedUser.username,
             senderName: user.username,
-          }).catch(() => {});
+          }).then((result) => {
+            if (!result?.success) {
+              console.error("[email] incoming request email failed", result?.error || "Unknown email error");
+            }
+          }).catch((error) => {
+            console.error("[email] incoming request email failed", error);
+          });
 
           return res.status(200).json({
             success: true,
@@ -711,7 +717,13 @@ export const sendRequest = async (req, res) => {
       email: targetedUser.email,
       recipientName: targetedUser.username,
       senderName: user.username,
-    }).catch(() => {});
+    }).then((result) => {
+      if (!result?.success) {
+        console.error("[email] incoming request email failed", result?.error || "Unknown email error");
+      }
+    }).catch((error) => {
+      console.error("[email] incoming request email failed", error);
+    });
 
     return res.status(200).json({
       success: true,

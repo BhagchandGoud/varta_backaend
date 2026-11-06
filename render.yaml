@@ -36,3 +36,5 @@ services:
         sync: false
       - key: SMTP_FROM_ADDRESS
         sync: false
+      - key: EMAIL_PROVIDER
+        value: smtp
