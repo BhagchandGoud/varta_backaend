@@ -20,7 +20,7 @@ const postJsonWithRedirects = async (url, body, timeoutMs = 30000) => {
         "Content-Type": "application/json",
       },
       body,
-      redirect: "manual",
+      redirect: "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -288,8 +288,14 @@ class EmailService {
         try {
           result = JSON.parse(responseText);
         } catch {
+          const contentType = response.headers.get("content-type") || "unknown";
+          const responseUrl = response.url || process.env.GOOGLE_APPS_SCRIPT_URL;
+          const isHtml = /^\s*<!doctype html|^\s*<html/i.test(responseText);
+
           throw new Error(
-            `Invalid Google Apps Script response: ${responseText.slice(0, 200)}`
+            isHtml
+              ? `Google Apps Script returned HTML instead of JSON (status ${response.status}, content-type ${contentType}, URL ${responseUrl}). Check that the deployment is /exec, set "Execute as" to Me, and set "Who has access" to Anyone.`
+              : `Invalid Google Apps Script response: ${responseText.slice(0, 200)}`
           );
         }
 
