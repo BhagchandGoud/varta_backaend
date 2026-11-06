@@ -12,6 +12,12 @@ const dbConnection = async()=>{
     }
     try {
         await mongoose.connect(process.env.DB_CONNECTION);
+
+        const indexes = await mongoose.connection.db.collection("users").indexes();
+        if (indexes.some((index) => index.name === "phone_1")) {
+            await mongoose.connection.db.collection("users").dropIndex("phone_1");
+            console.log("[db] removed obsolete unique phone index");
+        }
     } catch (error) {
         throw new Error(`MongoDB connection failed: ${error.message}`);
     }
