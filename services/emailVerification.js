@@ -2,6 +2,7 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import UserModel from "../models/UserModel.js";
+import { deleteRedisValue, getRedisJson, setRedisJson } from "../utils/redisStore.js";
 dotenv.config();
 
 const maskEmail = (email = "") => {
@@ -133,6 +134,7 @@ class OTPStore {
 }
 
 const otpStore = new OTPStore();
+const otpKey = (email) => `otp:${email}`;
 
 // email service class
 class EmailService {
@@ -167,7 +169,7 @@ class EmailService {
 
 //    verify otp
   async verifyOTP(email, userOTP) {
-    let stored = this.otpStore.get(email);
+    let stored = this.otpStore.get(email) || await getRedisJson(otpKey(email));
 
     if (!stored) {
       const user = await UserModel.findOne({
@@ -185,6 +187,7 @@ class EmailService {
           maxAttempts: 5,
         };
         this.otpStore.set(email, stored);
+        await setRedisJson(otpKey(email), stored, Math.max(1, Math.ceil((stored.expiresAt - Date.now()) / 1000)));
       }
     }
 
@@ -199,6 +202,7 @@ class EmailService {
 
     if (Date.now() > stored.expiresAt) {
       this.otpStore.delete(email);
+      await deleteRedisValue(otpKey(email));
       return { 
         success: false, 
         message: 'OTP has expired. Please request a new one.' 
@@ -207,6 +211,7 @@ class EmailService {
 
     if (stored.attempts >= stored.maxAttempts) {
       this.otpStore.delete(email);
+      await deleteRedisValue(otpKey(email));
       return { 
         success: false, 
         message: 'Too many failed attempts. Please request a new OTP.' 
@@ -216,6 +221,7 @@ class EmailService {
     if (stored.otp !== normalizedOTP) {
       stored.attempts += 1;
       this.otpStore.set(email, stored);
+      await setRedisJson(otpKey(email), stored, Math.max(1, Math.ceil((stored.expiresAt - Date.now()) / 1000)));
       await UserModel.updateOne(
         { email, isEmailVerified: false },
         { $set: { verificationAttempts: stored.attempts } },
@@ -506,6 +512,7 @@ class EmailService {
       
       // Store OTP with 10-minute expiry
       const otpData = this.storeOTP(email, otp, 10);
+      await setRedisJson(otpKey(email), otpData, 10 * 60);
       await UserModel.updateOne(
         { email, isEmailVerified: false },
         {
@@ -553,6 +560,7 @@ class EmailService {
     try {
       // Clear existing OTP
       this.otpStore.delete(email);
+      await deleteRedisValue(otpKey(email));
       
       // Send new OTP
       return await this.sendVerificationOTP({ email, username });

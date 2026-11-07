@@ -6,6 +6,7 @@ import ChatModel from "../models/ChatModel.js";
 import MessageModel from "../models/messageModel.js";
 import cloudinary from "../config/cloudinary.js";
 import EmailService from "../services/emailVerification.js";
+import { deleteRedisValue, getRedisJson, setRedisJson } from "../utils/redisStore.js";
 
 const emailService = new EmailService();
 
@@ -385,7 +386,12 @@ export const getUserById = async (req, res) => {
 export const getCurrentUser = async (req, res) => {
   try {
     const userId = req.user?.userId;
-    const user = await UserModel.findById(userId).select("-password");
+    const cacheKey = `user:profile:${userId}`;
+    let user = await getRedisJson(cacheKey);
+    if (!user) {
+      user = await UserModel.findById(userId).select("-password").lean();
+      if (user) await setRedisJson(cacheKey, user, 60);
+    }
 
     if (!user) {
       return res.status(404).json({
@@ -450,6 +456,8 @@ export const updateProfile = async (req, res) => {
       });
     }
 
+    await deleteRedisValue(`user:profile:${userId}`);
+    await deleteRedisValue(`user:auth:${userId}`);
     trieInstance = null;
 
     const relatedContacts = await ContactModel.find({
@@ -505,6 +513,8 @@ export const updateSettings = async (req, res) => {
     { new: true, runValidators: true, select: "settings" },
   );
   if (!user) return res.status(404).json({ success: false, message: "User not found" });
+  await deleteRedisValue(`user:profile:${req.user.userId}`);
+  await deleteRedisValue(`user:auth:${req.user.userId}`);
   return res.json({ success: true, settings: user.settings });
 };
 
@@ -1424,6 +1434,8 @@ export const deleteAccount = async (req, res) => {
 
     // Delete user
     await UserModel.findByIdAndDelete(userId);
+    await deleteRedisValue(`user:profile:${userId}`);
+    await deleteRedisValue(`user:auth:${userId}`);
 
     // Socket and online cleanup
     const io = req.app.locals.io;

@@ -7,6 +7,7 @@ import mongoose from "mongoose";
 import { LocalStorage } from "node-localstorage";
 import crypto from "crypto";
 import { logger } from "../utils/logger.js";
+import { deleteRedisValue, getRedisJson, setRedisJson } from "../utils/redisStore.js";
 
 //insert data from mongodb to bloom filter
 
@@ -15,6 +16,8 @@ const emailService = new EmailService();
 const localstorage = new LocalStorage("../localStorage");
 
 const tempUserStore = new Map(); //temparory storage for unverified users
+const tempUserKey = (email) => `registration:${email}`;
+const authUserKey = (userId) => `user:auth:${userId}`;
 
 const createBloomFilter = async () => {
   bloomFilter.clear();
@@ -90,6 +93,7 @@ export const register = async (req, res) => {
       createdAt: Date.now(),
     };
     tempUserStore.set(normalizedEmail, tempUserData);
+    await setRedisJson(tempUserKey(normalizedEmail), tempUserData, 10 * 60);
     const otpData = emailService.getOTPData(normalizedEmail);
 
     await UserModel.findOneAndUpdate(
@@ -147,7 +151,8 @@ export const verification = async (req, res) => {
       });
     }
 
-    const tempUser = tempUserStore.get(normalizedEmail);
+    const tempUser = tempUserStore.get(normalizedEmail) ||
+      await getRedisJson(tempUserKey(normalizedEmail));
     let existingUser = await UserModel.findOne({ email: normalizedEmail });
 
     if (!tempUser && !existingUser) {
@@ -179,6 +184,8 @@ export const verification = async (req, res) => {
     bloomFilter.add(savedUser.email.trim().toLowerCase());
 
     tempUserStore.delete(normalizedEmail);
+    await deleteRedisValue(tempUserKey(normalizedEmail));
+    await deleteRedisValue(authUserKey(savedUser._id));
     localstorage.clear();
 
     const token = await generateToken(savedUser._id, res);
@@ -227,7 +234,8 @@ export const resendOTP = async (req, res) => {
 
     const normalizedEmail = email.trim().toLowerCase();
     const user = await UserModel.findOne({ email: normalizedEmail });
-    const tempUser = tempUserStore.get(normalizedEmail);
+    const tempUser = tempUserStore.get(normalizedEmail) ||
+      await getRedisJson(tempUserKey(normalizedEmail));
     const resolvedUsername = username || tempUser?.username || user?.username || normalizedEmail.split("@")[0];
 
     const sendOTP = await emailService.resendOTP({
@@ -376,6 +384,7 @@ export const login = async (req, res) => {
     }
 
     const token = await generateToken(user._id, res);
+    await deleteRedisValue(authUserKey(user._id));
 
     // Update user status
     user.isOnline = true;
@@ -423,6 +432,12 @@ export const logout = async (req, res) => {
       secure: process.env.NODE_ENV === "production",
       path: "/",
     });
+
+    const token = req.cookies?.token;
+    if (token) {
+      const tokenKey = crypto.createHash("sha256").update(token).digest("hex");
+      await deleteRedisValue(`session:${tokenKey}`);
+    }
 
     return res.status(200).json({
       success: true,

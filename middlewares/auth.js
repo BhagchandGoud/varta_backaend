@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import UserModel from '../models/UserModel.js';
+import crypto from 'crypto';
+import { getRedisJson, getRedisValue, setRedisJson } from '../utils/redisStore.js';
 dotenv.config();
 
 export const authentication = async(req, res, next)=>{
@@ -21,6 +23,14 @@ export const authentication = async(req, res, next)=>{
         }
 
         decode = jwt.verify(token, process.env.JWT_SECRET);
+        const tokenKey = crypto.createHash('sha256').update(token).digest('hex');
+        const sessionUserId = await getRedisValue(`session:${tokenKey}`);
+        if (sessionUserId && sessionUserId !== String(decode.userId)) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid session",
+            });
+        }
     } catch {
         return res.status(401).json({
             success: false,
@@ -29,9 +39,14 @@ export const authentication = async(req, res, next)=>{
     }
 
     try {
-        const user = await UserModel.findById(decode.userId).select(
-            '_id role isSuspended',
-        );
+        const cacheKey = `user:auth:${decode.userId}`;
+        let user = await getRedisJson(cacheKey);
+        if (!user) {
+            user = await UserModel.findById(decode.userId).select(
+                '_id role isSuspended',
+            ).lean();
+            if (user) await setRedisJson(cacheKey, user, 60);
+        }
         if (!user) {
             return res.status(401).json({
                 success: false,
